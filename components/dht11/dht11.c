@@ -7,7 +7,7 @@
 
 static const char *TAG = "DHT11";
 
-/* ── 等待指定电平，超时返回 false ────────────────── */
+/* 等待指定电平，超时返回 false */
 
 static bool wait_level(int level, int timeout_us)
 {
@@ -20,7 +20,7 @@ static bool wait_level(int level, int timeout_us)
     return true;
 }
 
-/* ── 初始化 ──────────────────────────────────────── */
+/* 初始化 */
 
 esp_err_t dht11_init(void)
 {
@@ -32,12 +32,12 @@ esp_err_t dht11_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&io);
-    gpio_set_level(DHT11_PIN, 1);   /* 总线空闲高电平 */
+    gpio_set_level(DHT11_PIN, 1);
     ESP_LOGI(TAG, "Init OK, pin=GPIO%d", DHT11_PIN);
     return ESP_OK;
 }
 
-/* ── 读取 ────────────────────────────────────────── */
+/* 读取 */
 
 esp_err_t dht11_read(dht11_data_t *data)
 {
@@ -74,13 +74,11 @@ esp_err_t dht11_read(dht11_data_t *data)
 
     /* 步骤 3: 读取 40 位数据 */
     for (int i = 0; i < 40; i++) {
-        /* 等待 50us 低电平开始 */
         if (!wait_level(0, 80)) {
             portEXIT_CRITICAL();
             ESP_LOGW(TAG, "Data bit %d timeout (LOW)", i);
             return ESP_ERR_TIMEOUT;
         }
-        /* 等待高电平 */
         if (!wait_level(1, 80)) {
             portEXIT_CRITICAL();
             ESP_LOGW(TAG, "Data bit %d timeout (HIGH)", i);

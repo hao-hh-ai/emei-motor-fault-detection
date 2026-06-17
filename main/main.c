@@ -12,7 +12,7 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "=== Sensor Test Start ===");
 
-    /* ── I2C 总线初始化 ── */
+    /* I2C 总线初始化 */
     i2c_master_bus_handle_t i2c_bus;
     i2c_master_bus_config_t i2c_cfg = {
         .i2c_port = I2C_NUM_0,
@@ -24,20 +24,20 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_cfg, &i2c_bus));
 
-    /* ── ADXL345 初始化 ── */
+    /* ADXL345 初始化 */
     i2c_master_dev_handle_t adxl_dev;
     esp_err_t ret = adxl345_init(i2c_bus, &adxl_dev);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ADXL345 not found! Check wiring.");
     }
 
-    /* ── DHT11 初始化 ── */
+    /* DHT11 初始化 */
     dht11_init();
 
-    /* ── LED 初始化 ── */
+    /* LED 初始化 */
     led_alarm_init();
 
-    /* ── 主循环: 每秒读一次传感器 ── */
+    /* 主循环: 每秒读一次传感器 */
     int count = 0;
     while (1) {
         ESP_LOGI(TAG, "--- Tick %d ---", ++count);
@@ -56,7 +56,7 @@ void app_main(void)
                      dht.temperature, dht.humidity);
         }
 
-        /* 简单演示: 轮流切换 LED 状态 */
+        /* 轮流切换 LED 演示 */
         fault_level_t demo = (fault_level_t)(count % 4);
         led_alarm_set_level(demo);
 
