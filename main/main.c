@@ -1,18 +1,36 @@
 #include "esp_log.h"
+#include "esp_err.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "adxl345.h"
 #include "dht11.h"
 #include "led_alarm.h"
+#include "wifi_sta.h"
+#include "mqtt_app.h"
 
 static const char *TAG = "MAIN";
 
+static bool wifi_is_connected(void)
+{
+    wifi_ap_record_t ap;
+    return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Sensor Test Start ===");
+    ESP_LOGI(TAG, "=== 峨眉派 电机故障检测系统 ===");
 
-    /* I2C 总线初始化 */
+    /* NVS 初始化 */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    /* I2C + 传感器 */
     i2c_master_bus_handle_t i2c_bus;
     i2c_master_bus_config_t i2c_cfg = {
         .i2c_port = I2C_NUM_0,
@@ -24,41 +42,52 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_cfg, &i2c_bus));
 
-    /* ADXL345 初始化 */
     i2c_master_dev_handle_t adxl_dev;
-    esp_err_t ret = adxl345_init(i2c_bus, &adxl_dev);
+    ret = adxl345_init(i2c_bus, &adxl_dev);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ADXL345 not found! Check wiring.");
+        ESP_LOGE(TAG, "ADXL345 未检测到! 检查接线.");
     }
 
-    /* DHT11 初始化 */
     dht11_init();
-
-    /* LED 初始化 */
     led_alarm_init();
 
-    /* 主循环: 每秒读一次传感器 */
-    int count = 0;
+    /* WiFi + MQTT */
+    ESP_LOGI(TAG, "WiFi 连接 %s ...", CONFIG_WIFI_SSID);
+    wifi_sta_init();
+
+    ESP_LOGI(TAG, "MQTT 连接 %s ...", CONFIG_MQTT_BROKER_URI);
+    mqtt_client_init();
+
+    /* 主循环 */
+    int tick = 0;
     while (1) {
-        ESP_LOGI(TAG, "--- Tick %d ---", ++count);
+        ++tick;
+
+        /* 每 10 秒输出状态总览 */
+        if (tick % 10 == 1 || tick == 1) {
+            ESP_LOGI(TAG, "状态 | WiFi:%s  MQTT:%s  Tick:%d",
+                     wifi_is_connected() ? "在线" : "离线",
+                     mqtt_client_is_connected() ? "在线" : "离线",
+                     tick);
+        }
 
         /* 读 ADXL345 */
         adxl345_data_t accel;
-        if (adxl345_read(adxl_dev, &accel) == ESP_OK) {
-            ESP_LOGI(TAG, "ACCEL: X=%.3f  Y=%.3f  Z=%.3f m/s^2",
-                     accel.x, accel.y, accel.z);
+        esp_err_t acc_ret = adxl345_read(adxl_dev, &accel);
+        if (acc_ret == ESP_OK) {
+            ESP_LOGI(TAG, "ACCEL: X=%.3f Y=%.3f Z=%.3f", accel.x, accel.y, accel.z);
         }
 
         /* 读 DHT11 */
         dht11_data_t dht;
-        if (dht11_read(&dht) == ESP_OK) {
-            ESP_LOGI(TAG, "DHT11: T=%.1f C  H=%.1f %%",
-                     dht.temperature, dht.humidity);
+        esp_err_t dht_ret = dht11_read(&dht);
+        if (dht_ret == ESP_OK) {
+            ESP_LOGI(TAG, "DHT11: T=%.1f C  H=%.1f %%", dht.temperature, dht.humidity);
         }
 
-        /* 轮流切换 LED 演示 */
-        fault_level_t demo = (fault_level_t)(count % 4);
-        led_alarm_set_level(demo);
+        /* MQTT 上报 (不管连没连都尝试发) */
+        mqtt_client_publish(accel.x, accel.y, accel.z,
+                            dht.temperature, dht.humidity);
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
