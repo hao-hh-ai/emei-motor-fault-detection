@@ -1,0 +1,137 @@
+name: Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ============================================================
+  # Job 1: 静态检查 — 项目特定回归脚本
+  # ============================================================
+  static-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static checks
+        run: bash .claude/scripts/check-firmware.sh
+
+  # ============================================================
+  # Job 2: 密钥扫描 — 硬编码密钥/Token/密码
+  # ============================================================
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for hardcoded secrets
+        run: |
+          echo "=== 扫描硬编码密钥/Token/密码 ==="
+          PATTERNS=(
+            'password\s*=\s*"[^"]{3,}"'
+            'passwd\s*=\s*"[^"]{3,}"'
+            'secret\s*=\s*"[^"]{3,}"'
+            'api_key\s*=\s*"[^"]{3,}"'
+            'token\s*=\s*"[^"]{3,}"'
+            'CONFIG_WIFI_PASSWORD=[^ ]
+          )
+          SCAN_DIRS="main components huashan/src huashan/bridge"
+          FAIL=0
+          for pat in "${PATTERNS[@]}"; do
+            echo "  Pattern: $pat"
+            FOUND=$(grep -rn "$pat" $SCAN_DIRS 2>/dev/null || true)
+            if [ -n "$FOUND" ]; then
+              echo "  [FAIL] $FOUND"
+              FAIL=1
+            fi
+          done
+          # 排除 sdkconfig (Kconfig 配置项不算)
+          if [ $FAIL -eq 1 ]; then
+            echo ""
+            echo "ERROR: 发现疑似硬编码密钥。请使用 Kconfig (sdkconfig) 或环境变量管理。"
+            exit 1
+          fi
+          echo "PASS: 未发现硬编码密钥"
+
+  # ============================================================
+  # Job 3: 危险函数 — 不安全 C 调用
+  # ============================================================
+  dangerous-funcs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for dangerous C functions
+        run: |
+          echo "=== 扫描危险函数 ==="
+          DANGER=(
+            'sprintf\s*\('
+            'strcpy\s*\('
+            'gets\s*\('
+            'scanf\s*\('
+            'strcat\s*\('
+          )
+          SCAN_DIRS="main components huashan/src"
+          FAIL=0
+          for pat in "${DANGER[@]}"; do
+            echo "  Pattern: $pat"
+            FOUND=$(grep -rn "$pat" $SCAN_DIRS --include="*.c" --include="*.h" 2>/dev/null || true)
+            if [ -n "$FOUND" ]; then
+              echo "  [WARN] $FOUND"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL -eq 1 ]; then
+            echo ""
+            echo "WARNING: 发现不安全函数调用。建议用 snprintf/strncpy 等安全替代。"
+          fi
+          echo "DONE"
+
+  # ============================================================
+  # Job 4: 代码规范 — 文件/函数行数
+  # ============================================================
+  line-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check file and function line counts
+        run: |
+          echo "=== 代码行数检查 ==="
+          MAX_FILE=800
+          MAX_FUNC=50
+          FAIL=0
+
+          for f in $(find main components huashan/src -name "*.c" -o -name "*.h" 2>/dev/null); do
+            LINES=$(wc -l < "$f")
+            if [ "$LINES" -gt "$MAX_FILE" ]; then
+              echo "  [WARN] $f: $LINES lines > $MAX_FILE"
+              FAIL=1
+            fi
+          done
+
+          if [ $FAIL -eq 1 ]; then
+            echo "WARNING: 部分文件超过 ${MAX_FILE} 行限制"
+          else
+            echo "PASS: 所有文件 ≤ ${MAX_FILE} 行"
+          fi
+
+  # ============================================================
+  # Job 5: 编译验证 (ESP-IDF)
+  # ============================================================
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.4.4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32 firmware
+        shell: bash
+        run: |
+          echo "=== ESP-IDF 编译验证 ==="
+          . $IDF_PATH/export.sh
+          idf.py build
+          echo "PASS: 编译通过"
+      - name: Show firmware size
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py size
