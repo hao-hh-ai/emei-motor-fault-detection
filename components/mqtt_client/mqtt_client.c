@@ -38,23 +38,18 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         break;
 
     case MQTT_EVENT_DATA: {
-        /* 仅处理 command 主题 */
         if (evt->topic_len != 13 ||
             memcmp(evt->topic, MQTT_TOPIC_COMMAND, 13) != 0) {
             break;
         }
-
-        /* 简单字符串匹配 "fault_level":N, 容忍非标准 JSON */
         const char *key = "\"fault_level\"";
         const char *p = strstr(evt->data, key);
         if (!p) {
-            /* 容错: 尝试不带引号的 fault_level */
             key = "fault_level";
             p = strstr(evt->data, key);
         }
         if (p) {
             p += strlen(key);
-            /* 跳过 : 和空格 */
             while (*p == ':' || *p == ' ') p++;
             int lv = atoi(p);
             if (lv >= 0 && lv <= 3) {
@@ -87,23 +82,32 @@ esp_err_t mqtt_client_init(void)
     return ESP_OK;
 }
 
-esp_err_t mqtt_client_publish(float accel_x, float accel_y, float accel_z,
-                               float temp, float humi)
+esp_err_t mqtt_client_publish_batch(const int16_t *buf_x,
+                                     const int16_t *buf_y,
+                                     const int16_t *buf_z,
+                                     int count, int sample_rate_hz,
+                                     float temp, float humi)
 {
-    /* 时间戳 */
+    if (!buf_x || !buf_y || !buf_z || count <= 0) return ESP_ERR_INVALID_ARG;
+
     time_t now;
     time(&now);
 
-    /* 构建 JSON */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
     cJSON_AddNumberToObject(root, "timestamp", (double)now);
+    cJSON_AddNumberToObject(root, "sample_rate", sample_rate_hz);
 
-    cJSON *accel = cJSON_CreateObject();
-    cJSON_AddNumberToObject(accel, "x", accel_x);
-    cJSON_AddNumberToObject(accel, "y", accel_y);
-    cJSON_AddNumberToObject(accel, "z", accel_z);
-    cJSON_AddItemToObject(root, "accel", accel);
+    /* 构建样本数组 */
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < count; i++) {
+        cJSON *pt = cJSON_CreateObject();
+        cJSON_AddNumberToObject(pt, "x", buf_x[i]);
+        cJSON_AddNumberToObject(pt, "y", buf_y[i]);
+        cJSON_AddNumberToObject(pt, "z", buf_z[i]);
+        cJSON_AddItemToArray(arr, pt);
+    }
+    cJSON_AddItemToObject(root, "samples", arr);
 
     cJSON_AddNumberToObject(root, "temp", temp);
     cJSON_AddNumberToObject(root, "humi", humi);

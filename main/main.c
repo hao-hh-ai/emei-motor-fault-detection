@@ -13,24 +13,32 @@
 
 static const char *TAG = "MAIN";
 
+/* ── 采样配置 ──────────────────────────────────────── */
+#define SAMPLE_RATE_HZ  50          /* 每秒采样数 */
+#define BATCH_SIZE      50          /* 每批 50 点, ~1s 发一次 */
+
+/* ── 辅助 ──────────────────────────────────────────── */
+
 static bool wifi_is_connected(void)
 {
     wifi_ap_record_t ap;
     return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
 }
 
+/* ── 主程序 (单任务, 不崩) ─────────────────────────── */
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== 峨眉派 电机故障检测系统 ===");
+    ESP_LOGI(TAG, "=== 峨眉派 电机故障检测系统 v3 (轻量采集) ===");
 
-    /* NVS 初始化 */
+    /* NVS */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
 
-    /* I2C + 传感器 */
+    /* I2C + ADXL345 */
     i2c_master_bus_handle_t i2c_bus;
     i2c_master_bus_config_t i2c_cfg = {
         .i2c_port = I2C_NUM_0,
@@ -54,41 +62,59 @@ void app_main(void)
     /* WiFi + MQTT */
     ESP_LOGI(TAG, "WiFi 连接 %s ...", CONFIG_WIFI_SSID);
     wifi_sta_init();
-
     ESP_LOGI(TAG, "MQTT 连接 %s ...", CONFIG_MQTT_BROKER_URI);
     mqtt_client_init();
 
-    /* 主循环 */
+    /* 采样缓冲区 */
+    int16_t buf_x[BATCH_SIZE];
+    int16_t buf_y[BATCH_SIZE];
+    int16_t buf_z[BATCH_SIZE];
+    int buf_idx = 0;
+
     int tick = 0;
+    int dht_tick = 0;
+    dht11_data_t dht = {0};
+
+    TickType_t t_start = xTaskGetTickCount();
+
+    ESP_LOGI(TAG, "采集启动: %dHz, 批量 %d 点", SAMPLE_RATE_HZ, BATCH_SIZE);
+
     while (1) {
-        ++tick;
-
-        /* 每 10 秒输出状态总览 */
-        if (tick % 10 == 1 || tick == 1) {
-            ESP_LOGI(TAG, "状态 | WiFi:%s  MQTT:%s  Tick:%d",
-                     wifi_is_connected() ? "在线" : "离线",
-                     mqtt_client_is_connected() ? "在线" : "离线",
-                     tick);
+        /* ── 读 ADXL345 ── */
+        adxl345_raw_t raw;
+        if (adxl345_read_raw(adxl_dev, &raw) == ESP_OK) {
+            buf_x[buf_idx] = raw.x;
+            buf_y[buf_idx] = raw.y;
+            buf_z[buf_idx] = raw.z;
+            buf_idx++;
         }
 
-        /* 读 ADXL345 */
-        adxl345_data_t accel;
-        esp_err_t acc_ret = adxl345_read(adxl_dev, &accel);
-        if (acc_ret == ESP_OK) {
-            ESP_LOGI(TAG, "ACCEL: X=%.3f Y=%.3f Z=%.3f", accel.x, accel.y, accel.z);
+        /* ── 批量满, 上报 MQTT ── */
+        if (buf_idx >= BATCH_SIZE) {
+            buf_idx = 0;
+
+            /* DHT11 每 2 秒 */
+            if (++dht_tick >= 2) {
+                dht_tick = 0;
+                if (dht11_read(&dht) != ESP_OK) {
+                    dht.temperature = 0;
+                    dht.humidity = 0;
+                }
+            }
+
+            mqtt_client_publish_batch(buf_x, buf_y, buf_z, BATCH_SIZE,
+                                       SAMPLE_RATE_HZ,
+                                       dht.temperature, dht.humidity);
+
+            if (++tick % 10 == 0) {
+                ESP_LOGI(TAG, "状态 | WiFi:%s  MQTT:%s  已发:%d批",
+                         wifi_is_connected() ? "在线" : "离线",
+                         mqtt_client_is_connected() ? "在线" : "离线",
+                         tick);
+            }
         }
 
-        /* 读 DHT11 */
-        dht11_data_t dht;
-        esp_err_t dht_ret = dht11_read(&dht);
-        if (dht_ret == ESP_OK) {
-            ESP_LOGI(TAG, "DHT11: T=%.1f C  H=%.1f %%", dht.temperature, dht.humidity);
-        }
-
-        /* MQTT 上报 (不管连没连都尝试发) */
-        mqtt_client_publish(accel.x, accel.y, accel.z,
-                            dht.temperature, dht.humidity);
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        /* ── 20ms 间隔 → 50Hz ── */
+        vTaskDelay(pdMS_TO_TICKS(1000 / SAMPLE_RATE_HZ));
     }
 }

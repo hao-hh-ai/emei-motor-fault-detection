@@ -25,4 +25,12 @@ Thumbs.db
 
 # 依赖库
 components/*/lib/
-managed_components/
+managed_components/codegraph/
+.codegraph/
+tools/openocd-esp32/
+models/
+resource/
+.claude/settings.local.json
+.claude/settings.json
+*.pyc
+__pycache__/
