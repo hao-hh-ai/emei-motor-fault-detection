@@ -86,6 +86,7 @@ int main(int argc, char *argv[])
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    setbuf(stdout, NULL);
 
     /* 创建监听 socket */
     int lsock = socket(AF_INET, SOCK_STREAM, 0);
