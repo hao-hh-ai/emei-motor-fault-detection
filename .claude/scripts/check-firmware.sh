@@ -37,7 +37,12 @@ check_define "components/adxl345/adxl345.h" "ADXL345"
 echo ""
 echo "[2/5] 密钥扫描 — 硬编码凭据"
 SECRETS=0
-for pat in 'password\s*=\s*"[^"]{3,}"' 'passwd\s*=\s*"[^"]{3,}"' 'secret\s*=\s*"[^"]{3,}"' 'api_key\s*=\s*"[^"]{3,}"' 'token\s*=\s*"[^"]{3,}"'; do
+for pat in \
+    'password\s*=\s*"[^"]\{3,\}"' \
+    'passwd\s*=\s*"[^"]\{3,\}"' \
+    'secret\s*=\s*"[^"]\{3,\}"' \
+    'api_key\s*=\s*"[^"]\{3,\}"' \
+    'token\s*=\s*"[^"]\{3,\}"'; do
     FOUND=$(grep -rn "$pat" main/ components/ huashan/src/ huashan/bridge/ 2>/dev/null || true)
     if [ -n "$FOUND" ]; then
         echo "  FAIL: $FOUND"
