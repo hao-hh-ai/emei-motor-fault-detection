@@ -68,8 +68,8 @@ int tpu_init(const char *model_path)
 
     printf("[TPU] 加载模型: %s\n", model_path);
 
-    CVI_RC ret = CVI_NN_LoadModel(model_path, &g_model);
-    if (ret != CVI_RC_SUCCESS) {
+    CVI_RC ret = CVI_NN_RegisterModel(model_path, &g_model);
+    if (ret != 0) {
         printf("[TPU] 加载失败 (ret=%d), 回退到规则系统\n", ret);
         return -1;
     }
@@ -83,8 +83,12 @@ int tpu_init(const char *model_path)
         return -1;
     }
 
-    printf("[TPU] 输入: count=%d 输出: count=%d\n",
-           (int)g_inputs[0].count, (int)g_outputs[0].count);
+    /* 验证输入大小 */
+    size_t input_size  = CVI_NN_TensorSize(&g_inputs[0]);
+    size_t input_count = CVI_NN_TensorCount(&g_inputs[0]);
+    printf("[TPU] 输入: %zu 元素 (%zu bytes) 输出: %zu 元素\n",
+           input_count, input_size,
+           CVI_NN_TensorCount(&g_outputs[0]));
 
     g_ready = 1;
     printf("[TPU] 模型就绪\n");
@@ -96,19 +100,24 @@ int tpu_infer(const float *window)
 {
     if (!g_ready) return -1;
 
+    /* 1. 每样本归一化 */
     float normalized[WINDOW_SIZE];
     per_sample_normalize(window, normalized, WINDOW_SIZE);
 
-    memcpy((float *)g_inputs[0].data, normalized,
+    /* 2. 拷贝到输入张量 */
+    memcpy(CVI_NN_TensorPtr(&g_inputs[0]), normalized,
            WINDOW_SIZE * sizeof(float));
 
-    CVI_RC ret = CVI_NN_RunNeuralNetwork(g_model, g_inputs, g_outputs);
-    if (ret != CVI_RC_SUCCESS) {
+    /* 3. 推理 */
+    CVI_RC ret = CVI_NN_Forward(g_model, g_inputs, g_input_num,
+                                 g_outputs, g_output_num);
+    if (ret != 0) {
         printf("[TPU] 推理失败 (ret=%d)\n", ret);
         return -1;
     }
 
-    const float *logits = (const float *)g_outputs[0].data;
+    /* 4. 从输出张量读取结果, argmax */
+    const float *logits = (const float *)CVI_NN_TensorPtr(&g_outputs[0]);
     int best = 0;
     float best_val = logits[0];
     for (int i = 1; i < NUM_CLASSES; i++) {
