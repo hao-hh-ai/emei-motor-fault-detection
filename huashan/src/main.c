@@ -192,27 +192,7 @@ int main(int argc, char *argv[])
                           cf_val = 0.0f, kurt_val = 0.0f;
 
                     if (use_tpu) {
-                        /* 合成三轴幅值 → TPU 推理 */
-                        float mag_window[SW_WINDOW_SIZE];
-                        for (int i = 0; i < SW_WINDOW_SIZE; i++) {
-                            float x = xs_buf[i], y = ys_buf[i], z = zs_buf[i];
-                            mag_window[i] = sqrtf(x*x + y*y + z*z);
-                        }
-                        int raw_level = tpu_infer(mag_window);
-
-                        /* 持续性滤波: 3 帧一致才确认 (防抖动) */
-                        static int persist_buf[3] = {-1, -1, -1};
-                        persist_buf[0] = persist_buf[1];
-                        persist_buf[1] = persist_buf[2];
-                        persist_buf[2] = raw_level;
-                        if (persist_buf[0] == persist_buf[1] &&
-                            persist_buf[1] == persist_buf[2]) {
-                            level = raw_level;
-                        } else {
-                            level = -1;  /* 未确认, 不输出 */
-                        }
-
-                        /* 打印时仍提取特征用于监控 */
+                        /* 提取特征 (用于 RMS 前置判断) */
                         vibration_features_t feat;
                         feat_extract(xs_buf, ys_buf, zs_buf,
                                      SW_WINDOW_SIZE, &feat);
@@ -220,6 +200,19 @@ int main(int argc, char *argv[])
                         peak_val = feat.peak;
                         cf_val   = feat.crest_factor;
                         kurt_val = feat.kurtosis;
+
+                        /* RMS 低于阈值 → 振动太弱, 直接判定正常 (不浪费 TPU) */
+                        if (rms_val < 0.10f && peak_val < 0.30f) {
+                            level = 0;
+                        } else {
+                            /* 合成三轴幅值 → TPU 推理 */
+                            float mag_window[SW_WINDOW_SIZE];
+                            for (int i = 0; i < SW_WINDOW_SIZE; i++) {
+                                float x = xs_buf[i], y = ys_buf[i], z = zs_buf[i];
+                                mag_window[i] = sqrtf(x*x + y*y + z*z);
+                            }
+                            level = tpu_infer(mag_window);
+                        }
                     } else {
                         /* 规则系统 */
                         vibration_features_t feat;
