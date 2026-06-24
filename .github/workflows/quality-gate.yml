@@ -127,8 +127,7 @@ jobs:
           echo "=== ESP-IDF 编译验证 ==="
           . $IDF_PATH/export.sh
           idf.py set-target esp32c3
-          cp sdkconfig.ci sdkconfig
-          idf.py build 2>&1 | tail -50
+          idf.py build
           echo "PASS: 编译通过"
       - name: Show firmware size
         shell: bash
