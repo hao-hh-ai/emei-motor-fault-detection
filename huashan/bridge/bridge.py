@@ -167,6 +167,50 @@ def detect_fault(features):
     return _history[-2] if len(_history) >= 2 else 0
 
 
+# ── 训练数据采集 ─────────────────────────────────────
+
+FEATURE_ORDER = ['rms', 'peak', 'crest_factor', 'kurtosis',
+                 'skewness', 'clearance', 'shape_factor', 'impulse_factor']
+_training_file = None
+_training_path = "training_data.csv"
+
+def _init_training_csv():
+    """初始化训练数据 CSV, 写入表头"""
+    global _training_file
+    import os as _os
+    path = _os.path.join(_os.path.dirname(__file__), _training_path)
+    existed = _os.path.exists(path)
+    _training_file = open(path, 'a', newline='')
+    if not existed:
+        _training_file.write(','.join(FEATURE_ORDER + ['fault_level']) + '\n')
+        _training_file.flush()
+        print(f"[数据采集] 新建: {path}")
+
+def _collect_training_sample(features, level):
+    """保存一条训练样本 (8特征 + 规则等级), 每20条打印进度"""
+    global _training_file
+    if _training_file is None:
+        return
+    row = ','.join(str(features[k]) for k in FEATURE_ORDER) + f',{level}\n'
+    _training_file.write(row)
+
+    # 计数 & 统计
+    c = _collect_training_sample.count
+    _collect_training_sample.count = c + 1
+    if not hasattr(_collect_training_sample, 'hist'):
+        _collect_training_sample.hist = [0, 0, 0, 0]
+    _collect_training_sample.hist[level] += 1
+    h = _collect_training_sample.hist
+
+    # 每 20 条打印
+    if _collect_training_sample.count % 20 == 0:
+        _training_file.flush()
+        total = _collect_training_sample.count
+        print(f"[采集] {total:5d}条 | L0:{h[0]:4d} L1:{h[1]:4d} "
+              f"L2:{h[2]:4d} L3:{h[3]:4d}")
+_collect_training_sample.count = 0
+
+
 # ── MQTT 回调 ─────────────────══════════════════════
 
 window = SlidingWindow()
@@ -258,6 +302,9 @@ def on_message(client, userdata, msg):
               f"CF={feat['crest_factor']:.1f} Kurt={feat['kurtosis']:.1f} "
               f"Clear={feat['clearance']:.1f} Imp={feat['impulse_factor']:.1f}")
 
+        # ── 数据采集: 保存 (8特征, 规则等级) 供 MLP 训练 ──
+        _collect_training_sample(feat, level)
+
         cmd = json.dumps({"fault_level": level})
         client.publish("motor/command", cmd)
 
@@ -285,6 +332,9 @@ def main():
     print(f"TCP 转发: {hs_host}:{hs_port}")
     print(f"窗口: {WINDOW_SIZE} 点, 50Hz 下约 5.1s 填满")
     print("=" * 50)
+
+    # ── 启动数据采集 ──
+    _init_training_csv()
 
     # ── 启动 TCP 发送线程 (daemon: 主线程退出时自动结束) ──
     sender = threading.Thread(target=tcp_sender, daemon=True, name="tcp-sender")

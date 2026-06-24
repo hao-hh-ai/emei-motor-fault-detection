@@ -26,6 +26,7 @@
 #include "feature_extract.h"
 #include "fault_detect.h"
 #include "tpu_inference.h"
+#include "mlp_classifier.h"
 
 #define DEFAULT_PORT      9999
 #define RX_BUF_SIZE       8192
@@ -113,13 +114,13 @@ int main(int argc, char *argv[])
     printf("║  华山派 TCP 数据处理 v2                  ║\n");
     printf("║  端口: %d  等待 PC bridge 连接...       ║\n", port);
     printf("╚══════════════════════════════════════════╝\n");
-
-    /* ── 初始化 TPU: 加载 cvimodel, 失败则回退到规则系统 ── */
-    int use_tpu = 0;
-    if (tpu_init("/mnt/data/motor_fault_bf16.cvimodel") == 0) {
+    /* TPU 优先, 失败则回退纯C MLP */
+    int use_tpu = 0, use_mlp = 0;
+    if (tpu_init("/mnt/data/deploy_conv.cvimodel") == 0) {
         use_tpu = 1;
     } else {
-        printf("[系统] TPU 不可用, 使用规则系统\n");
+        printf("[系统] TPU 不可用, 使用纯C MLP\n");
+        use_mlp = 1;
     }
 
     while (g_running) {
@@ -191,8 +192,8 @@ int main(int argc, char *argv[])
                     float rms_val = 0.0f, peak_val = 0.0f,
                           cf_val = 0.0f, kurt_val = 0.0f;
 
-                    if (use_tpu) {
-                        /* 提取特征 (用于 RMS 前置判断) */
+                    if (use_tpu || use_mlp) {
+                        /* AI 推理 (TPU 优先, MLP 兜底) */
                         vibration_features_t feat;
                         feat_extract(xs_buf, ys_buf, zs_buf,
                                      SW_WINDOW_SIZE, &feat);
@@ -201,17 +202,19 @@ int main(int argc, char *argv[])
                         cf_val   = feat.crest_factor;
                         kurt_val = feat.kurtosis;
 
-                        /* RMS 低于阈值 → 振动太弱, 直接判定正常 (不浪费 TPU) */
                         if (rms_val < 0.10f && peak_val < 0.30f) {
                             level = 0;
                         } else {
-                            /* 合成三轴幅值 → TPU 推理 */
-                            float mag_window[SW_WINDOW_SIZE];
-                            for (int i = 0; i < SW_WINDOW_SIZE; i++) {
-                                float x = xs_buf[i], y = ys_buf[i], z = zs_buf[i];
-                                mag_window[i] = sqrtf(x*x + y*y + z*z);
+                            float feats[8] = {
+                                feat.rms, feat.peak, feat.crest_factor,
+                                feat.kurtosis, feat.skewness, feat.clearance,
+                                feat.shape_factor, feat.impulse_factor,
+                            };
+                            if (use_tpu) {
+                                level = tpu_infer(feats);
+                            } else {
+                                level = mlp_predict(feats);
                             }
-                            level = tpu_infer(mag_window);
                         }
                     } else {
                         /* 规则系统 */
@@ -225,14 +228,13 @@ int main(int argc, char *argv[])
                         kurt_val = feat.kurtosis;
                     }
 
-                    if (level >= 0 && level != last_level) {
+                    if (level >= 0) {
                         const char *icon[] = {"[OK]","[WARN]","[DANGER]","[CRIT]"};
                         printf("%s Lv.%d | RMS=%.2f Peak=%.2f "
                                "CF=%.1f Kurt=%.1f  [%s]\n",
                                icon[level], level,
                                rms_val, peak_val, cf_val, kurt_val,
-                               use_tpu ? "TPU" : "rule");
-                        last_level = level;
+                               use_tpu ? "TPU" : (use_mlp ? "MLP" : "rule"));
                     }
                 }
 
