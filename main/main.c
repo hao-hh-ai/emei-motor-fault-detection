@@ -76,6 +76,7 @@ void app_main(void)
     dht11_data_t dht = {0};
 
     TickType_t t_start = xTaskGetTickCount();
+    (void)t_start;
 
     ESP_LOGI(TAG, "采集启动: %dHz, 批量 %d 点", SAMPLE_RATE_HZ, BATCH_SIZE);
 
