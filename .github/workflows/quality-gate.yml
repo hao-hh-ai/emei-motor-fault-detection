@@ -122,23 +122,11 @@ jobs:
       image: espressif/idf:v5.4.4
     steps:
       - uses: actions/checkout@v4
-      - name: Generate sdkconfig (CI default)
-        shell: bash
-        run: |
-          . $IDF_PATH/export.sh
-          idf.py set-target esp32c3
-          # 注入项目必需的 Kconfig 值 (CONFIG_WIFI_* 占位，仅用于编译)
-          cat >> sdkconfig << 'EOF'
-          CONFIG_WIFI_SSID="ci_build"
-          CONFIG_WIFI_PASSWORD="ci_build"
-          CONFIG_PARTITION_TABLE_SINGLE_APP=y
-          CONFIG_FREERTOS_UNICORE=y
-          CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584
-          EOF
       - name: Build ESP32 firmware
         shell: bash
         run: |
           . $IDF_PATH/export.sh
+          idf.py set-target esp32c3
           idf.py build
           echo "PASS: 编译通过"
       - name: Show firmware size
