@@ -30,6 +30,7 @@
 #define DEFAULT_PORT      9999
 #define RX_BUF_SIZE       8192
 #define MAX_SAMPLES       100
+#define INFER_STRIDE      8     /* 每 8 个样本推理一次 (160ms @50Hz) */
 
 static volatile int g_running = 1;
 
@@ -171,10 +172,15 @@ int main(int argc, char *argv[])
                 struct raw_sample samples[MAX_SAMPLES];
                 int ns = parse_telemetry_samples(line_start,
                                                   samples, MAX_SAMPLES);
-                for (int i = 0; i < ns; i++)
+                for (int i = 0; i < ns; i++) {
                     sw_feed(&sw, samples[i].x, samples[i].y, samples[i].z);
 
-                if (sw_is_ready(&sw)) {
+                    /* 每 INFER_STRIDE 个样本推理一次, 降低延迟 */
+                    static int feed_count = 0;
+                    feed_count++;
+                    if (!sw_is_ready(&sw) || (feed_count % INFER_STRIDE != 0))
+                        continue;
+
                     static float xs_buf[SW_WINDOW_SIZE];
                     static float ys_buf[SW_WINDOW_SIZE];
                     static float zs_buf[SW_WINDOW_SIZE];

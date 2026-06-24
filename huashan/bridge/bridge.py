@@ -233,26 +233,33 @@ def on_message(client, userdata, msg):
     if not samples:
         return
 
-    # 喂入窗口
+    # 逐点喂入窗口, 每 INFER_STRIDE 个样本推理一次 (降低延迟)
+    INFER_STRIDE = 8
     raw = [(s["x"], s["y"], s["z"]) for s in samples]
-    window.feed_batch(raw)
+    for x, y, z in raw:
+        window.buf_x.append(x)
+        window.buf_y.append(y)
+        window.buf_z.append(z)
 
-    if not window.is_ready():
-        return
+        # 窗口未满 或 不在推理步长上 → 跳过
+        if not window.is_ready():
+            continue
+        if (len(window.buf_x) % INFER_STRIDE) != 0:
+            continue
 
-    # 窗口就绪 → 特征提取
-    xs, ys, zs = window.get_window()
-    feat = extract_features(xs, ys, zs)
-    level = detect_fault(feat)
+        # 窗口就绪 → 特征提取
+        xs, ys, zs = window.get_window()
+        feat = extract_features(xs, ys, zs)
+        level = detect_fault(feat)
 
-    icon = ["[OK]", "[WARN]", "[DANGER]", "[CRIT]"][level]
-    print(f"{icon} Lv.{level} | "
-          f"RMS={feat['rms']:.2f} Peak={feat['peak']:.2f} "
-          f"CF={feat['crest_factor']:.1f} Kurt={feat['kurtosis']:.1f} "
-          f"Clear={feat['clearance']:.1f} Imp={feat['impulse_factor']:.1f}")
+        icon = ["[OK]", "[WARN]", "[DANGER]", "[CRIT]"][level]
+        print(f"{icon} Lv.{level} | "
+              f"RMS={feat['rms']:.2f} Peak={feat['peak']:.2f} "
+              f"CF={feat['crest_factor']:.1f} Kurt={feat['kurtosis']:.1f} "
+              f"Clear={feat['clearance']:.1f} Imp={feat['impulse_factor']:.1f}")
 
-    cmd = json.dumps({"fault_level": level})
-    client.publish("motor/command", cmd)
+        cmd = json.dumps({"fault_level": level})
+        client.publish("motor/command", cmd)
 
 
 # ── 主程序 ─────────────────════════════════════════
