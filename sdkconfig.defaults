@@ -1,3 +1,0 @@
-# CI 编译用 Kconfig 预设 (不含真实凭据)
-CONFIG_WIFI_SSID="ci"
-CONFIG_WIFI_PASSWORD="ci"
