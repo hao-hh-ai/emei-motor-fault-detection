@@ -12,7 +12,10 @@ import math
 import argparse
 import socket
 import time
+import threading
+import random
 from collections import deque
+from queue import Queue
 from threshold_config import *
 
 try:
@@ -167,26 +170,59 @@ def detect_fault(features):
 # ── MQTT 回调 ─────────────────══════════════════════
 
 window = SlidingWindow()
-huashan_sock = None      # 到华山派的 TCP 连接
+_tcp_queue = Queue(maxsize=500)   # TCP 发送队列 (非阻塞)
+_hs_addr = None                    # 华山派地址 (host, port)
 
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
+
+def tcp_sender():
+    """后台线程: 从队列取数据发送到华山派, 自动重连, 绝不阻塞 MQTT 线程"""
+    sock = None
+    while True:
+        data = _tcp_queue.get()    # 阻塞等待数据
+        if data is None:           # 关闭信号
+            if sock:
+                sock.close()
+            break
+
+        # 确保连接
+        if sock is None:
+            try:
+                sock = socket.create_connection(_hs_addr, timeout=3)
+                sock.settimeout(2)  # send 最多阻塞 2 秒
+                print(f"[TCP] 已连接华山派 {_hs_addr[0]}:{_hs_addr[1]}")
+            except OSError:
+                sock = None
+                continue           # 丢弃本条, 下一条重试连接
+
+        # 发送
+        try:
+            sock.sendall(data)
+        except OSError:
+            sock.close()
+            sock = None
+            # 放回队列头部, 重连后重发 (最多积压 1 条)
+            if _tcp_queue.qsize() < _tcp_queue.maxsize - 1:
+                _tcp_queue.put(data)
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    if not reason_code.is_failure:
         print("[MQTT] 已连接, 订阅 motor/telemetry")
         client.subscribe("motor/telemetry")
     else:
-        print(f"[MQTT] 连接失败 rc={rc}")
+        print(f"[MQTT] 连接失败 reason={reason_code}")
+
+def on_disconnect(client, userdata, flags, reason_code, properties):
+    if reason_code != 0:
+        print(f"[MQTT] 断开 reason={reason_code}, 自动重连中...")
 
 
 def on_message(client, userdata, msg):
-    global huashan_sock
-
-    # ── 原始 JSON 转发给华山派 ──
-    if huashan_sock:
+    # ── 原始 JSON 转发给华山派 (非阻塞, 交后台线程发送) ──
+    if _hs_addr:
         try:
-            huashan_sock.sendall(msg.payload + b'\n')
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            print("[TCP] 华山派断开")
-            huashan_sock = None
+            _tcp_queue.put_nowait(msg.payload + b'\n')
+        except Exception:
+            pass  # 队列满则丢弃, 绝不阻塞 MQTT 线程
 
     try:
         payload = json.loads(msg.payload)
@@ -222,7 +258,7 @@ def on_message(client, userdata, msg):
 # ── 主程序 ─────────────────════════════════════════
 
 def main():
-    global huashan_sock
+    global _hs_addr
 
     parser = argparse.ArgumentParser(description="华山派 MQTT 桥接 v3")
     parser.add_argument("--broker", default="localhost")
@@ -234,30 +270,33 @@ def main():
     # 解析华山派地址
     hs_host, _, hs_port_str = args.huashan.partition(":")
     hs_port = int(hs_port_str) if hs_port_str else 9999
+    _hs_addr = (hs_host, hs_port)
 
     print("=" * 50)
-    print("华山派 MQTT 桥接 v3 (PC 端全智能)")
+    print("华山派 MQTT 桥接 v4 (PC 端全智能)")
     print(f"MQTT Broker: {args.broker}:{args.port}")
+    print(f"TCP 转发: {hs_host}:{hs_port}")
     print(f"窗口: {WINDOW_SIZE} 点, 50Hz 下约 5.1s 填满")
     print("=" * 50)
 
-    # ── 连接华山派 TCP ──
-    try:
-        huashan_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        huashan_sock.settimeout(5)
-        huashan_sock.connect((hs_host, hs_port))
-        huashan_sock.settimeout(None)
-        print(f"[TCP] 已连接华山派 {hs_host}:{hs_port}")
-    except OSError as e:
-        print(f"[TCP] 华山派未就绪 ({e}), 继续运行(不转发)")
-        huashan_sock = None
+    # ── 启动 TCP 发送线程 (daemon: 主线程退出时自动结束) ──
+    sender = threading.Thread(target=tcp_sender, daemon=True, name="tcp-sender")
+    sender.start()
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,
-                         client_id="huashan_bridge")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                         client_id=f"huashan_bridge_{random.randint(1000,9999)}")
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.connect(args.broker, args.port, 60)
-    client.loop_forever()
+    client.loop_start()  # 后台线程跑 MQTT 网络 I/O, 不阻塞
+
+    try:
+        while True:
+            time.sleep(1)  # 主线程保持存活
+    except KeyboardInterrupt:
+        print("\n[系统] 退出")
+        _tcp_queue.put(None)  # 通知 TCP 线程关闭
 
 
 if __name__ == "__main__":
