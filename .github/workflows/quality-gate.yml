@@ -127,7 +127,7 @@ jobs:
         run: |
           echo "=== ESP-IDF 编译验证 ==="
           . $IDF_PATH/export.sh
-          cp sdkconfig.ci sdkconfig
+          idf.py set-target esp32c3
           idf.py build 2>&1 | tee build.log
           echo "PASS: 编译通过"
       - name: Show build log on failure
