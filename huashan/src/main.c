@@ -25,6 +25,7 @@
 #include "sliding_window.h"
 #include "feature_extract.h"
 #include "fault_detect.h"
+#include "tpu_inference.h"
 
 #define DEFAULT_PORT      9999
 #define RX_BUF_SIZE       8192
@@ -112,6 +113,14 @@ int main(int argc, char *argv[])
     printf("║  端口: %d  等待 PC bridge 连接...       ║\n", port);
     printf("╚══════════════════════════════════════════╝\n");
 
+    /* ── 初始化 TPU: 加载 cvimodel, 失败则回退到规则系统 ── */
+    int use_tpu = 0;
+    if (tpu_init("/mnt/data/motor_fault_bf16.cvimodel") == 0) {
+        use_tpu = 1;
+    } else {
+        printf("[系统] TPU 不可用, 使用规则系统\n");
+    }
+
     while (g_running) {
         printf("[TCP] 等待连接...\n");
 
@@ -171,18 +180,47 @@ int main(int argc, char *argv[])
                     static float zs_buf[SW_WINDOW_SIZE];
                     sw_get_window(&sw, xs_buf, ys_buf, zs_buf);
 
-                    vibration_features_t feat;
-                    feat_extract(xs_buf, ys_buf, zs_buf,
-                                 SW_WINDOW_SIZE, &feat);
+                    /* ── 故障判定: TPU 优先, 规则系统兜底 ── */
+                    int level;
+                    float rms_val = 0.0f, peak_val = 0.0f,
+                          cf_val = 0.0f, kurt_val = 0.0f;
 
-                    int level = fault_detect(&feat);
+                    if (use_tpu) {
+                        /* 合成三轴幅值 → TPU 推理 */
+                        float mag_window[SW_WINDOW_SIZE];
+                        for (int i = 0; i < SW_WINDOW_SIZE; i++) {
+                            float x = xs_buf[i], y = ys_buf[i], z = zs_buf[i];
+                            mag_window[i] = sqrtf(x*x + y*y + z*z);
+                        }
+                        level = tpu_infer(mag_window);
+
+                        /* 打印时仍提取特征用于监控 */
+                        vibration_features_t feat;
+                        feat_extract(xs_buf, ys_buf, zs_buf,
+                                     SW_WINDOW_SIZE, &feat);
+                        rms_val  = feat.rms;
+                        peak_val = feat.peak;
+                        cf_val   = feat.crest_factor;
+                        kurt_val = feat.kurtosis;
+                    } else {
+                        /* 规则系统 */
+                        vibration_features_t feat;
+                        feat_extract(xs_buf, ys_buf, zs_buf,
+                                     SW_WINDOW_SIZE, &feat);
+                        level = fault_detect(&feat);
+                        rms_val  = feat.rms;
+                        peak_val = feat.peak;
+                        cf_val   = feat.crest_factor;
+                        kurt_val = feat.kurtosis;
+                    }
+
                     if (level >= 0 && level != last_level) {
                         const char *icon[] = {"[OK]","[WARN]","[DANGER]","[CRIT]"};
                         printf("%s Lv.%d | RMS=%.2f Peak=%.2f "
-                               "CF=%.1f Kurt=%.1f\n",
+                               "CF=%.1f Kurt=%.1f  [%s]\n",
                                icon[level], level,
-                               feat.rms, feat.peak,
-                               feat.crest_factor, feat.kurtosis);
+                               rms_val, peak_val, cf_val, kurt_val,
+                               use_tpu ? "TPU" : "rule");
                         last_level = level;
                     }
                 }
@@ -202,6 +240,7 @@ int main(int argc, char *argv[])
     }
 
     close(lsock);
+    tpu_deinit();
     printf("[系统] 退出\n");
     return 0;
 }
