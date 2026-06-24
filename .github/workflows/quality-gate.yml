@@ -128,8 +128,14 @@ jobs:
           echo "=== ESP-IDF 编译验证 ==="
           . $IDF_PATH/export.sh
           cp sdkconfig.ci sdkconfig
-          idf.py build
+          idf.py build 2>&1 | tee build.log
           echo "PASS: 编译通过"
+      - name: Show build log on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== Build log (last 80 lines) ==="
+          tail -80 build.log 2>/dev/null || echo "No build log"
       - name: Show firmware size
         shell: bash
         run: |
