@@ -198,7 +198,19 @@ int main(int argc, char *argv[])
                             float x = xs_buf[i], y = ys_buf[i], z = zs_buf[i];
                             mag_window[i] = sqrtf(x*x + y*y + z*z);
                         }
-                        level = tpu_infer(mag_window);
+                        int raw_level = tpu_infer(mag_window);
+
+                        /* 持续性滤波: 3 帧一致才确认 (防抖动) */
+                        static int persist_buf[3] = {-1, -1, -1};
+                        persist_buf[0] = persist_buf[1];
+                        persist_buf[1] = persist_buf[2];
+                        persist_buf[2] = raw_level;
+                        if (persist_buf[0] == persist_buf[1] &&
+                            persist_buf[1] == persist_buf[2]) {
+                            level = raw_level;
+                        } else {
+                            level = -1;  /* 未确认, 不输出 */
+                        }
 
                         /* 打印时仍提取特征用于监控 */
                         vibration_features_t feat;
