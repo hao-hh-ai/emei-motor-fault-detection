@@ -1,21 +1,9 @@
-menu "峨眉派 电机故障检测配置"
-
-    config WIFI_SSID
-        string "WiFi SSID"
-        default "YourWiFiSSID"
-        help
-            WiFi 接入点名称 (2.4GHz)
-
-    config WIFI_PASSWORD
-        string "WiFi 密码"
-        default "YourWiFiPassword"
-        help
-            WiFi 接入点密码
+menu "峨眉派 电机故障检测"
 
     config MQTT_BROKER_URI
         string "MQTT Broker URI"
-        default "mqtt://192.168.1.100:1883"
+        default "mqtt://192.168.1.1:1883"
         help
-            MQTT Broker 地址, 格式: mqtt://host:port
+            MQTT Broker 地址，格式: mqtt://host:port
 
 endmenu
